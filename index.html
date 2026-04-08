@@ -329,6 +329,14 @@ textarea:focus,.ipt:focus{border-color:var(--blue2)}
 .user-meta{font-size:10px;color:var(--text2);text-align:right}
 .user-del-btn{padding:4px 10px;border-radius:5px;border:.5px solid #fee2e2;background:#fff5f5;color:var(--red);font-size:11px;cursor:pointer;font-family:inherit}
 .user-del-btn:hover{background:#fee2e2}
+/* ═══ 할인율 관리 테이블 ═══ */
+.rate-table{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px}
+.rate-table th{background:#f1f3f4;padding:8px 6px;text-align:center;font-weight:600;color:var(--text2);border-bottom:1.5px solid var(--border);font-size:11px}
+.rate-table td{padding:6px;text-align:center;border-bottom:.5px solid var(--border)}
+.rate-table td:first-child{text-align:left;font-weight:600;padding-left:10px}
+.rate-table .rate-input{width:64px;padding:4px 6px;border:1px solid var(--border);border-radius:5px;text-align:center;font-size:12px;font-family:inherit}
+.rate-table .rate-input:focus{border-color:var(--blue);outline:none;box-shadow:0 0 0 2px rgba(59,130,246,.15)}
+.rate-save-row{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
 .admin-btn{padding:3px 8px;border-radius:6px;font-size:10px;cursor:pointer;border:1px solid rgba(255,255,255,.25);background:rgba(255,193,7,.2);color:#ffd54f;font-family:inherit;font-weight:600}
 .admin-btn:hover{background:rgba(255,193,7,.35)}
 </style>
@@ -393,6 +401,18 @@ textarea:focus,.ipt:focus{border-color:var(--blue2)}
     <div class="admin-stats" id="adminStats"></div>
     <div id="userList">
       <div style="text-align:center;color:var(--text3);font-size:12px;padding:16px">불러오는 중...</div>
+    </div>
+  </div>
+
+  <!-- 할인율 관리 -->
+  <div class="panel">
+    <div class="ph"><span class="ico">📊</span>보험사 할인율 관리
+      <span style="font-size:10px;color:var(--text3);font-weight:400;margin-left:4px">오프라인 대비 CM/TM 할인율 (%)</span>
+    </div>
+    <table class="rate-table" id="rateTable"></table>
+    <div class="rate-save-row">
+      <button class="btn sm" onclick="resetRatesToDefault()">기본값 복원</button>
+      <button class="btn pri sm" onclick="saveRates()">💾 할인율 저장</button>
     </div>
   </div>
 </div>
@@ -707,8 +727,12 @@ textarea:focus,.ipt:focus{border-color:var(--blue2)}
 // ═══════════════════════════════════════════════════════════════
 // 상수
 // ═══════════════════════════════════════════════════════════════
-const CM_RATES = {samsung:.196,hyundai:.175,kb:.173,db:.172,hanhwa:.128,heungkuk:.175,meritz:.162,lotte:.176,hana:.120,mg:0};
-const TM_RATES = {samsung:.146,hyundai:.117,kb:.134,db:.117,hanhwa:.150,heungkuk:.130,meritz:.162,lotte:0,hana:.085,mg:0};
+// 할인율 기본값 (Firestore에 저장된 값이 없을 때 사용)
+const DEFAULT_CM_RATES = {samsung:.196,hyundai:.175,kb:.173,db:.172,hanhwa:.128,heungkuk:.175,meritz:.162,lotte:.176,hana:.120,mg:0};
+const DEFAULT_TM_RATES = {samsung:.146,hyundai:.117,kb:.134,db:.117,hanhwa:.150,heungkuk:.130,meritz:.162,lotte:0,hana:.085,mg:0};
+// 실제 사용되는 할인율 (Firestore에서 로드 시 덮어씌워짐)
+let CM_RATES = {...DEFAULT_CM_RATES};
+let TM_RATES = {...DEFAULT_TM_RATES};
 const ICOWON_ORDER = ['mg','lotte','kb','db','hanhwa','samsung','hana','hyundai','heungkuk','meritz'];
 
 const INS = {
@@ -2256,6 +2280,7 @@ function showPage(page) {
     pageAdmin.style.display = '';
     navWorkBtn.style.display = '';
     loadUserList();
+    renderRateTable();
   } else {
     pageWork.style.display = '';
   }
@@ -2295,6 +2320,7 @@ auth.onAuthStateChanged(user => {
     document.getElementById('userName').textContent = user.displayName || user.email;
     saveUserInfo(user);
     loadProfile();
+    loadRates();
     // 관리자 버튼 표시
     const adminBtn = document.getElementById('navAdminBtn');
     if(adminBtn) adminBtn.style.display = ADMIN_EMAILS.includes(user.email) ? '' : 'none';
@@ -2626,6 +2652,70 @@ function getWorkerText() {
   if(userProfile.title) t += ' ' + userProfile.title;
   if(userProfile.phone) t += ' (' + userProfile.phone + ')';
   return t;
+}
+
+// ═══ 할인율 관리 (Firestore 연동) ═══
+// 보험사 표시 순서 (INS 키 기준)
+const RATE_INS_ORDER = ['samsung','hyundai','kb','db','hanhwa','heungkuk','meritz','lotte','hana','mg'];
+
+// Firestore에서 할인율 로드
+function loadRates() {
+  return db.collection('settings').doc('discountRates').get().then(doc => {
+    if(doc.exists) {
+      const d = doc.data();
+      if(d.cm) CM_RATES = {...DEFAULT_CM_RATES, ...d.cm};
+      if(d.tm) TM_RATES = {...DEFAULT_TM_RATES, ...d.tm};
+    }
+  }).catch(e => console.warn('할인율 로드 실패, 기본값 사용:', e));
+}
+
+// Firestore에 할인율 저장 (관리자 전용)
+function saveRates() {
+  if(!isAdmin()) { toast('⚠️ 관리자만 저장할 수 있습니다'); return; }
+  // 입력값 읽기
+  const newCm = {}, newTm = {};
+  RATE_INS_ORDER.forEach(id => {
+    const cmEl = document.getElementById('rate-cm-' + id);
+    const tmEl = document.getElementById('rate-tm-' + id);
+    if(cmEl) newCm[id] = parseFloat(cmEl.value) / 100 || 0;
+    if(tmEl) newTm[id] = parseFloat(tmEl.value) / 100 || 0;
+  });
+  CM_RATES = {...newCm};
+  TM_RATES = {...newTm};
+  db.collection('settings').doc('discountRates').set({
+    cm: CM_RATES, tm: TM_RATES,
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    updatedBy: currentUser.email
+  }).then(() => toast('✅ 할인율이 저장되었습니다'))
+    .catch(e => { console.error(e); toast('⚠️ 저장 실패: ' + e.message); });
+}
+
+// 기본값 복원
+function resetRatesToDefault() {
+  if(!isAdmin()) return;
+  CM_RATES = {...DEFAULT_CM_RATES};
+  TM_RATES = {...DEFAULT_TM_RATES};
+  renderRateTable();
+  toast('기본값으로 복원됨 (저장 버튼을 눌러야 반영됩니다)');
+}
+
+// 할인율 편집 테이블 렌더링
+function renderRateTable() {
+  const tbl = document.getElementById('rateTable');
+  if(!tbl) return;
+  let html = '<thead><tr><th>보험사</th><th>CM 다이렉트 (%)</th><th>TM 전화가입 (%)</th></tr></thead><tbody>';
+  RATE_INS_ORDER.forEach(id => {
+    const name = INS[id]?.name || id;
+    const cmVal = (CM_RATES[id] * 100).toFixed(1);
+    const tmVal = (TM_RATES[id] * 100).toFixed(1);
+    html += `<tr>
+      <td>${name}</td>
+      <td><input class="rate-input" type="number" step="0.1" min="0" max="50" id="rate-cm-${id}" value="${cmVal}"></td>
+      <td><input class="rate-input" type="number" step="0.1" min="0" max="50" id="rate-tm-${id}" value="${tmVal}"></td>
+    </tr>`;
+  });
+  html += '</tbody>';
+  tbl.innerHTML = html;
 }
 
 // 사용자 목록 불러오기
